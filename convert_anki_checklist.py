@@ -75,115 +75,92 @@ if os.path.exists(media_file):
                 if potential_len == dist:
                     # Candidate found!
                     fn_start = pos_len_byte + 1
-                    fn_end = ext_end
-                    
+        # Manual scan for \n KEY \n LEN FILENAME
+        i = 0
+        n = len(data)
+        
+        # Shift-Map for Windows/US keyboards (heuristic fallback)
+        shift_map = {
+            '!': '1', '"': '2', '§': '3', '$': '4', '%': '5', '&': '6', '/': '7', '(': '8', ')': '9', '=': '0',
+            '+': '*',
+        }
+        
+        while i < n - 5:
+            if data[i] == 10: # \n
+                j = i + 1
+                while j < n and j < i + 50 and data[j] != 10:
+                    j += 1
+                
+                if j < n and data[j] == 10:
+                    key_bytes = data[i+1:j]
                     try:
-                        filename = data[fn_start:fn_end].decode('utf-8')
+                        key = key_bytes.decode('utf-8')
                         
-                        # Now look for KEY before pos_len_byte (which should be preceded by \n)
-                        # Expectation: ... \n <Key> \n <Len> ...
-                        # So data[pos_len_byte - 1] should be \n (10)
-                        
-                        valid_key = None
-                        if data[pos_len_byte - 1] == 10:
-                            # Scan backwards for next \n (Key1)
-                            key1_end = pos_len_byte - 1
-                            key1_start = key1_end - 1
+                        # LEN
+                        if j + 1 < n:
+                            length = data[j+1]
+                            start_fn = j + 2
+                            end_fn = start_fn + length
                             
-                            while key1_start >= 0 and data[key1_start] != 10 and (key1_end - key1_start) < 20:
-                                key1_start -= 1
-                            
-                            key1_start += 1 
-                            
-                            # Candidate Key 1
-                            try:
-                                key1 = data[key1_start:key1_end].decode('ascii')
-                                if key1 in existing_files:
-                                    valid_key = key1
-                            except:
-                                pass
+                            if end_fn <= n:
+                                fn_bytes = data[start_fn:end_fn]
+                                filename = fn_bytes.decode('utf-8')
                                 
-                            # If Key1 not found, check Key2 (Grandparent)
-                            # Expectation: ... \n <Key2> \n <Key1> \n <Len> ...
-                            if not valid_key and data[key1_start - 1] == 10:
-                                key2_end = key1_start - 1
-                                key2_start = key2_end - 1
-                                
-                                while key2_start >= 0 and data[key2_start] != 10 and (key2_end - key2_start) < 20:
-                                    key2_start -= 1
-                                
-                                key2_start += 1
-                                
-                                try:
-                                    key2 = data[key2_start:key2_end].decode('ascii')
-                                    if key2 in existing_files:
-                                        valid_key = key2
-                                except:
-                                    pass
-
-                        if valid_key:
-                            # Sanitize output filename
-                            clean_name = sanitize_filename(filename)
-                            media_map[valid_key] = clean_name
-                            
-                            # We need to copy/rename valid_key -> clean_name
-                            src = os.path.join(BASE_DIR, valid_key)
-                            dst = os.path.join(IMAGES_DIR, clean_name)
-                            if os.path.exists(src):
-                                # 1. Try Zstd Decompression
-                                is_zstd = False
-                                try:
-                                    with open(src, "rb") as f_chk:
-                                        header = f_chk.read(4)
-                                        if header == b'\x28\xb5\x2f\xfd':
-                                            is_zstd = True
-                                except: pass
-                                
-                                # Decompress to temp dict or directly
-                                temp_dst = dst + ".tmp"
-                                if is_zstd:
-                                    try:
-                                        with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
-                                            dctx = zstandard.ZstdDecompressor()
-                                            dctx.copy_stream(f_in, f_out)
-                                    except:
-                                        shutil.copy2(src, temp_dst)
-                                else:
-                                    shutil.copy2(src, temp_dst)
-                                
-                                # 2. Standardize with Pillow (Fix Windows issues)
-                                try:
-                                    # Need to import PIL here or at top
-                                    from PIL import Image
-                                    with Image.open(temp_dst) as img:
-                                        img.load()
-                                        fmt = None
-                                        if clean_name.lower().endswith((".png")): fmt = "PNG"
-                                        elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                                if "." in filename:
+                                    clean_name = sanitize_filename(filename)
+                                    media_map[key] = clean_name
+                                    
+                                    # Copy logic
+                                    # Try Key
+                                    src_key = key
+                                    if src_key not in existing_files:
+                                        # Try Fallback
+                                        if key in shift_map and shift_map[key] in existing_files:
+                                            src_key = shift_map[key]
+                                        # Try ASCII code? e.g. " -> 34
+                                        elif len(key) == 1 and str(ord(key[0])) in existing_files:
+                                            src_key = str(ord(key[0]))
+                                    
+                                    src = os.path.join(BASE_DIR, src_key)
+                                    dst = os.path.join(IMAGES_DIR, clean_name)
+                                    
+                                    if os.path.exists(src):
+                                        # Decompress/Fix
+                                        is_zstd = False
+                                        try:
+                                            with open(src, "rb") as f_chk:
+                                                if f_chk.read(4) == b'\x28\xb5\x2f\xfd': is_zstd = True
+                                        except: pass
                                         
-                                        if fmt:
-                                            if fmt == "JPEG" and img.mode in ("RGBA", "P"):
-                                                img = img.convert("RGB")
-                                            img.save(dst, format=fmt)
+                                        temp_dst = dst + ".tmp"
+                                        if is_zstd:
+                                            try:
+                                                with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
+                                                    zstandard.ZstdDecompressor().copy_stream(f_in, f_out)
+                                            except: shutil.copy2(src, temp_dst)
                                         else:
-                                            shutil.move(temp_dst, dst)
-                                    if os.path.exists(temp_dst):
-                                        os.remove(temp_dst)
-                                except ImportError:
-                                    shutil.move(temp_dst, dst)
-                                    print("Warning: Pillow not installed.")
-                                except Exception as e:
-                                    print(f"Image fix failed: {e}")
-                                    if os.path.exists(temp_dst):
-                                        shutil.move(temp_dst, dst)
-
-                                print(f"Recovered: {clean_name} (from {valid_key})")
-                            found = True
-                    except:
-                        pass
-                
-                if found: break
-                
+                                            shutil.copy2(src, temp_dst)
+                                        
+                                        # Pillow
+                                        try:
+                                            from PIL import Image
+                                            with Image.open(temp_dst) as img:
+                                                img.load()
+                                                fmt = None
+                                                if clean_name.lower().endswith((".png")): fmt = "PNG"
+                                                elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                                                if fmt:
+                                                    if fmt == "JPEG" and img.mode in ("RGBA", "P"): img = img.convert("RGB")
+                                                    img.save(dst, format=fmt)
+                                                else: shutil.move(temp_dst, dst)
+                                                if os.path.exists(temp_dst): os.remove(temp_dst)
+                                        except:
+                                            if os.path.exists(temp_dst): shutil.move(temp_dst, dst)
+                                            
+                                        print(f"Recovered: {clean_name} (from {src_key})")
+                                        found = True
+                    except: pass
+            i += 1
     except Exception as e:
         print(f"Error extracting media: {e}")
 

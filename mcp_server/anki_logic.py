@@ -28,112 +28,117 @@ def extract_media(base_dir, images_dir):
         return media_map, "No media file found."
 
     try:
-        data = b""
+        data = None
+        # Try pure json load first (standard v2)
+        try:
+            with open(media_file, "r", encoding="utf-8") as f:
+                media_map = json.load(f)
+            # Check if keys exist
+            return media_map, f"Loaded {len(media_map)} from JSON."
+        except: pass
+
+        # Binary/Compressed handling
         with open(media_file, "rb") as f:
             dctx = zstandard.ZstdDecompressor()
             with dctx.stream_reader(f) as reader:
                 data = reader.read()
         
-        existing_files = set(os.listdir(base_dir))
-        ext_pattern = re.compile(b'\.(png|jpg|jpeg|gif|svg)', re.IGNORECASE)
+        # Manual scan for \n KEY \n LEN FILENAME
+        i = 0
+        n = len(data)
         
-        for m in ext_pattern.finditer(data):
-            ext_end = m.end()
-            found = False
-            for dist in range(5, 255):
-                pos_len_byte = ext_end - dist - 1
-                if pos_len_byte < 0: break
+        existing_files = set(os.listdir(base_dir))
+        
+        # Shift-Map for Windows/US keyboards (heuristic)
+        # ! -> 1, " -> 2, etc.
+        shift_map = {
+            '!': '1', '"': '2', '§': '3', '$': '4', '%': '5', '&': '6', '/': '7', '(': '8', ')': '9', '=': '0',
+            '+': '*',  # + might map to *? Or vice/versa. 
+            # In Anki sometimes keys are just indices.
+            # If we see symbol keys, we check for digit files.
+        }
+        
+        while i < n - 5:
+            if data[i] == 10: # \n
+                j = i + 1
+                while j < n and j < i + 50 and data[j] != 10:
+                    j += 1
                 
-                potential_len = data[pos_len_byte]
-                if potential_len == dist:
-                    fn_start = pos_len_byte + 1
-                    fn_end = ext_end
-                    
+                if j < n and data[j] == 10:
+                    key_bytes = data[i+1:j]
                     try:
-                        filename = data[fn_start:fn_end].decode('utf-8')
-                        valid_key = None
+                        key = key_bytes.decode('utf-8')
                         
-                        # Check immediate key
-                        if data[pos_len_byte - 1] == 10:
-                            key_end = pos_len_byte - 1
-                            key_start = key_end - 1
-                            while key_start >= 0 and data[key_start] != 10 and (key_end - key_start) < 20:
-                                key_start -= 1
-                            key_start += 1 
-                            try:
-                                key1 = data[key_start:key_end].decode('ascii')
-                                if key1 in existing_files:
-                                    valid_key = key1
-                            except: pass
+                        # LEN
+                        if j + 1 < n:
+                            length = data[j+1]
+                            start_fn = j + 2
+                            end_fn = start_fn + length
                             
-                            # Check grandparent key
-                            if not valid_key and data[key_start - 1] == 10:
-                                key2_end = key_start - 1
-                                key2_start = key2_end - 1
-                                while key2_start >= 0 and data[key2_start] != 10 and (key2_end - key2_start) < 20:
-                                    key2_start -= 1
-                                key2_start += 1
-                                try:
-                                    key2 = data[key2_start:key2_end].decode('ascii')
-                                    if key2 in existing_files:
-                                        valid_key = key2
-                                except: pass
-
-                        if valid_key:
-                            clean_name = sanitize_filename(filename)
-                            media_map[valid_key] = clean_name
-                            
-                            src = os.path.join(base_dir, valid_key)
-                            dst = os.path.join(images_dir, clean_name)
-                            if os.path.exists(src):
-                                # 1. Try Zstd Decompression
-                                is_zstd = False
-                                try:
-                                    with open(src, "rb") as f_chk:
-                                        header = f_chk.read(4)
-                                        if header == b'\x28\xb5\x2f\xfd':
-                                            is_zstd = True
-                                except: pass
+                            if end_fn <= n:
+                                fn_bytes = data[start_fn:end_fn]
+                                filename = fn_bytes.decode('utf-8')
                                 
-                                temp_dst = dst + ".tmp"
-                                if is_zstd:
-                                    try:
-                                        with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
-                                            dctx = zstandard.ZstdDecompressor()
-                                            dctx.copy_stream(f_in, f_out)
-                                    except:
-                                        shutil.copy2(src, temp_dst)
-                                else:
-                                    shutil.copy2(src, temp_dst)
-                                
-                                # 2. Standardize with Pillow
-                                try:
-                                    from PIL import Image
-                                    with Image.open(temp_dst) as img:
-                                        img.load()
-                                        fmt = None
-                                        if clean_name.lower().endswith((".png")): fmt = "PNG"
-                                        elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                                if "." in filename:
+                                    clean_name = sanitize_filename(filename)
+                                    media_map[key] = clean_name
+                                    
+                                    # Copy logic
+                                    # Try Key
+                                    src_key = key
+                                    if src_key not in existing_files:
+                                        # Try Fallback
+                                        if key in shift_map and shift_map[key] in existing_files:
+                                            src_key = shift_map[key]
+                                        # Try ASCII code? e.g. " -> 34
+                                        elif len(key) == 1 and str(ord(key[0])) in existing_files:
+                                            src_key = str(ord(key[0]))
+                                    
+                                    src = os.path.join(base_dir, src_key)
+                                    dst = os.path.join(images_dir, clean_name)
+                                    
+                                    if os.path.exists(src):
+                                        # Decompress/Fix
+                                        is_zstd = False
+                                        try:
+                                            with open(src, "rb") as f_chk:
+                                                if f_chk.read(4) == b'\x28\xb5\x2f\xfd': is_zstd = True
+                                        except: pass
                                         
-                                        if fmt:
-                                            if fmt == "JPEG" and img.mode in ("RGBA", "P"):
-                                                img = img.convert("RGB")
-                                            img.save(dst, format=fmt)
+                                        temp_dst = dst + ".tmp"
+                                        if is_zstd:
+                                            try:
+                                                with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
+                                                    zstandard.ZstdDecompressor().copy_stream(f_in, f_out)
+                                            except: shutil.copy2(src, temp_dst)
                                         else:
-                                            shutil.move(temp_dst, dst)
-                                    if os.path.exists(temp_dst):
-                                        os.remove(temp_dst)
-                                except:
-                                    if os.path.exists(temp_dst):
-                                        shutil.move(temp_dst, dst)
-                                
-                            found = True
+                                            shutil.copy2(src, temp_dst)
+                                        
+                                        # Pillow
+                                        valid_img = False
+                                        try:
+                                            from PIL import Image
+                                            with Image.open(temp_dst) as img:
+                                                img.load()
+                                                valid_img = True
+                                                fmt = None
+                                                if clean_name.lower().endswith(".png"): fmt = "PNG"
+                                                elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                                                if fmt:
+                                                    if fmt == "JPEG" and img.mode in ("RGBA", "P"): img = img.convert("RGB")
+                                                    img.save(dst, format=fmt)
+                                                else: shutil.move(temp_dst, dst)
+                                                if os.path.exists(temp_dst): os.remove(temp_dst)
+                                        except:
+                                            if os.path.exists(temp_dst): shutil.move(temp_dst, dst)
+                                            
+                                        # found = True # This variable was not used, removed.
                     except: pass
-                if found: break
+            i += 1
+            
+        return media_map, f"Extracted {len(media_map)} images using manual scan."
     except Exception as e:
         return media_map, f"Error extracting media: {str(e)}"
-
-    return media_map, f"Found {len(media_map)} media files."
 
 def convert_deck(input_dir, output_dir, chunk_size=50):
     """Main function to convert Anki deck in input_dir to MD in output_dir."""
