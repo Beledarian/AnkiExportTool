@@ -23,5 +23,4 @@ A robust Python script to extract **Anki decks (.apkg)** into clean **Markdown f
 - Python 3.x
 - `pip install zstandard`
 
----
-*Created by your AI Assistant.* 🤖
+
