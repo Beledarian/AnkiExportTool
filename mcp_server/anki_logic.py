@@ -86,7 +86,7 @@ def extract_media(base_dir, images_dir):
                             src = os.path.join(base_dir, valid_key)
                             dst = os.path.join(images_dir, clean_name)
                             if os.path.exists(src):
-                                # Check if file is Zstd compressed
+                                # 1. Try Zstd Decompression
                                 is_zstd = False
                                 try:
                                     with open(src, "rb") as f_chk:
@@ -95,16 +95,37 @@ def extract_media(base_dir, images_dir):
                                             is_zstd = True
                                 except: pass
                                 
+                                temp_dst = dst + ".tmp"
                                 if is_zstd:
                                     try:
-                                        with open(src, "rb") as f_in, open(dst, "wb") as f_out:
+                                        with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
                                             dctx = zstandard.ZstdDecompressor()
                                             dctx.copy_stream(f_in, f_out)
                                     except:
-                                        # Fallback copy if decompression fails
-                                        shutil.copy2(src, dst)
+                                        shutil.copy2(src, temp_dst)
                                 else:
-                                    shutil.copy2(src, dst)
+                                    shutil.copy2(src, temp_dst)
+                                
+                                # 2. Standardize with Pillow
+                                try:
+                                    from PIL import Image
+                                    with Image.open(temp_dst) as img:
+                                        img.load()
+                                        fmt = None
+                                        if clean_name.lower().endswith((".png")): fmt = "PNG"
+                                        elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                                        
+                                        if fmt:
+                                            if fmt == "JPEG" and img.mode in ("RGBA", "P"):
+                                                img = img.convert("RGB")
+                                            img.save(dst, format=fmt)
+                                        else:
+                                            shutil.move(temp_dst, dst)
+                                    if os.path.exists(temp_dst):
+                                        os.remove(temp_dst)
+                                except:
+                                    if os.path.exists(temp_dst):
+                                        shutil.move(temp_dst, dst)
                                 
                             found = True
                     except: pass

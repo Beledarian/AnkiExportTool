@@ -130,7 +130,7 @@ if os.path.exists(media_file):
                             src = os.path.join(BASE_DIR, valid_key)
                             dst = os.path.join(IMAGES_DIR, clean_name)
                             if os.path.exists(src):
-                                # Check if file is Zstd compressed
+                                # 1. Try Zstd Decompression
                                 is_zstd = False
                                 try:
                                     with open(src, "rb") as f_chk:
@@ -139,17 +139,47 @@ if os.path.exists(media_file):
                                             is_zstd = True
                                 except: pass
                                 
+                                # Decompress to temp dict or directly
+                                temp_dst = dst + ".tmp"
                                 if is_zstd:
                                     try:
-                                        with open(src, "rb") as f_in, open(dst, "wb") as f_out:
+                                        with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
                                             dctx = zstandard.ZstdDecompressor()
                                             dctx.copy_stream(f_in, f_out)
                                     except:
-                                        # Fallback copy if decompression fails
-                                        shutil.copy2(src, dst)
+                                        shutil.copy2(src, temp_dst)
                                 else:
-                                    shutil.copy2(src, dst)
-                                    
+                                    shutil.copy2(src, temp_dst)
+                                
+                                # 2. Standardize with Pillow (Fix Windows issues)
+                                try:
+                                    # Need to import PIL here or at top
+                                    # Assuming standard imports at top, but for safety in this snippet:
+                                    from PIL import Image
+                                    with Image.open(temp_dst) as img:
+                                        img.load()
+                                        fmt = None
+                                        if clean_name.lower().endswith((".png")): fmt = "PNG"
+                                        elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                                        
+                                        if fmt:
+                                            if fmt == "JPEG" and img.mode in ("RGBA", "P"):
+                                                img = img.convert("RGB")
+                                            img.save(dst, format=fmt)
+                                        else:
+                                            # Just move if unknown ext
+                                            shutil.move(temp_dst, dst)
+                                    if os.path.exists(temp_dst):
+                                        os.remove(temp_dst)
+                                except ImportError:
+                                    # Fallback if Pillow missing
+                                    shutil.move(temp_dst, dst)
+                                    print("Warning: Pillow not installed, images might be incompatible.")
+                                except Exception as e:
+                                    print(f"Image fix failed: {e}")
+                                    if os.path.exists(temp_dst):
+                                        shutil.move(temp_dst, dst)
+
                                 print(f"Recovered: {clean_name} (from {valid_key})")
                             found = True
                     except:
