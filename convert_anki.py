@@ -240,11 +240,10 @@ def fix_image_paths(text):
 chunks = [notes[i:i + 50] for i in range(0, len(notes), 50)]
 
 for idx, chunk in enumerate(chunks, 1):
-    filename = f"Anki_{idx}.md"
+    filename = f"Anki_Part_{idx}.md"
     filepath = os.path.join(OUTPUT_DIR, filename)
     
-    md_content = f"# 🗂️ Anki Export Teil {idx}\n\n"
-    md_content += f"**Quelle:** {len(chunk)} Fragen aus dem Altklausuren-Deck.\n\n---\n\n"
+    md_content = f"# Anki Export Part {idx}\n\n"
     
     for q_idx, note in enumerate(chunk, 1):
         fields = note[0].split('\x1f')

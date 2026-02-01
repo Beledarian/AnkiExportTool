@@ -25,6 +25,10 @@ async def list_tools() -> list[Tool]:
                     "output_dir": {
                         "type": "string",
                         "description": "Optional output directory. Default: next to apkg."
+                    },
+                    "chunk_size": {
+                        "type": "integer",
+                        "description": "Number of cards per Markdown file. Default: 50"
                     }
                 },
                 "required": ["apkg_path"]
@@ -37,6 +41,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
     if name == "convert_anki_deck":
         apkg_path = arguments["apkg_path"]
         output_dir = arguments.get("output_dir")
+        chunk_size = arguments.get("chunk_size", 50)
 
         if not os.path.exists(apkg_path):
             return [TextContent(type="text", text=f"Error: File not found at {apkg_path}")]
@@ -59,7 +64,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             return [TextContent(type="text", text="Error: Invalid .apkg file (not a valid zip).")]
 
         # Run conversion
-        results = convert_deck(extract_temp, output_dir)
+        results = convert_deck(extract_temp, output_dir, chunk_size=chunk_size)
         
         # Cleanup temp
         try:

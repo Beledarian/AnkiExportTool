@@ -135,7 +135,7 @@ def extract_media(base_dir, images_dir):
 
     return media_map, f"Found {len(media_map)} media files."
 
-def convert_deck(input_dir, output_dir):
+def convert_deck(input_dir, output_dir, chunk_size=50):
     """Main function to convert Anki deck in input_dir to MD in output_dir."""
     
     images_dir = os.path.join(output_dir, "Anki_Images")
@@ -174,15 +174,14 @@ def convert_deck(input_dir, output_dir):
         notes = cursor.fetchall()
         log.append(f"Found {len(notes)} notes.")
         
-        chunks = [notes[i:i + 50] for i in range(0, len(notes), 50)]
+        chunks = [notes[i:i + chunk_size] for i in range(0, len(notes), chunk_size)]
         created_files = []
 
         for idx, chunk in enumerate(chunks, 1):
-            filename = f"Anki_{idx}.md"
+            filename = f"Anki_Part_{idx}.md"
             filepath = os.path.join(output_dir, filename)
             
-            md_content = f"# 🗂️ Anki Export Part {idx}\n\n"
-            md_content += f"**Source:** {len(chunk)} questions.\n\n---\n\n"
+            md_content = f"# Anki Export Part {idx}\n\n"
             
             for q_idx, note in enumerate(chunk, 1):
                 fields = note[0].split('\x1f')
