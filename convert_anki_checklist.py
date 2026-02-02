@@ -42,125 +42,128 @@ if os.path.exists(media_file):
         # Make a set of existing files for quick lookup
         existing_files = set(os.listdir(BASE_DIR))
         
-        # Regex for extensions
-        ext_pattern = re.compile(b'\.(png|jpg|jpeg|gif|svg)', re.IGNORECASE)
+        existing_files = set(os.listdir(BASE_DIR))
         
-        for m in ext_pattern.finditer(data):
-            ext_end = m.end()
-            # This is the potential end of a filename
-            # But regex matches the *first* occurrence? No, finditer finds all.
-            # We need to find the START of this string.
-            # We trust the length byte?
-            
-            # The length byte should be at position (Start - 1).
-            # We don't know Start yet.
-            # But we can try reasonable lengths (e.g. 1 to 100)
-            
-            # Optimization: Look for the \n before the length byte?
-            # Pattern: \n <Meta> \n <Len> <Filename>
-            # OR: \n <Key> \n <Len> <Filename>
-            
-            # Let's scan backwards from ext_start to find a \n <Len> pattern?
-            # Or simpler: Assume filename ends at ext_end.
-            # The byte before the filename is Len.
-            # So search backwards for a byte `L` such that `(CurrentPos - L_Pos - 1) == L`.
-            
-            found = False
-            # Check backwards 5 to 255 bytes
-            for dist in range(5, 255):
-                pos_len_byte = ext_end - dist - 1
-                if pos_len_byte < 0: break
+        # Method 1: Try JSON (Direct or ZSTD decompressed)
+        # Some media files are just plain JSON
+        try:
+            # Try plain text first
+            try:
+                media_map = json.loads(data.decode("utf-8"))
+                print(f"Loaded {len(media_map)} media files via JSON.")
+            except:
+                # If decode failed or not JSON, it might be Protobuf
+                raise ValueError("Not JSON")
+        except:
+             # Method 2: Protobuf List (ZSTD already decompressed into 'data')
+             # Structure: Repeated [ Tag 1 (0a) | Len (Varint) | Content ]
+             # Content: [ Tag 1 (0a) | Len (Varint) | Filename ] ...
+             
+             print("JSON parse failed. Trying Protobuf List parsing...")
+             i = 0
+             n = len(data)
+             idx = 0
+             
+             while i < n:
+                # Expect Tag 1 (0a) -> Outer Message
+                if data[i] != 0x0a:
+                    # If we hit something else, maybe end or corrupt?
+                    # Minimal skip
+                    i += 1
+                    continue
+                    
+                i += 1
+                # Read Varint (Outer Len)
+                shift = 0
+                outer_len = 0
+                while True:
+                    if i >= n: break
+                    b = data[i]
+                    i += 1
+                    outer_len |= (b & 0x7F) << shift
+                    if not (b & 0x80): break
+                    shift += 7
                 
-                potential_len = data[pos_len_byte]
-                if potential_len == dist:
-                    # Candidate found!
-                    fn_start = pos_len_byte + 1
-        # Manual scan for \n KEY \n LEN FILENAME
-        i = 0
-        n = len(data)
-        
-        # Shift-Map for Windows/US keyboards (heuristic fallback)
-        shift_map = {
-            '!': '1', '"': '2', '§': '3', '$': '4', '%': '5', '&': '6', '/': '7', '(': '8', ')': '9', '=': '0',
-            '+': '*',
-        }
-        
-        while i < n - 5:
-            if data[i] == 10: # \n
-                j = i + 1
-                while j < n and j < i + 50 and data[j] != 10:
-                    j += 1
+                if i >= n: break
+                end_pos = i + outer_len
                 
-                if j < n and data[j] == 10:
-                    key_bytes = data[i+1:j]
-                    try:
-                        key = key_bytes.decode('utf-8')
-                        
-                        # LEN
-                        if j + 1 < n:
-                            length = data[j+1]
-                            start_fn = j + 2
-                            end_fn = start_fn + length
+                # Inside the message: Expect Tag 1 (0a) -> Filename
+                if i < n and data[i] == 0x0a:
+                    i += 1
+                    # Read Varint (Inner Len)
+                    shift = 0
+                    inner_len = 0
+                    while True:
+                        if i >= n: break
+                        b = data[i]
+                        i += 1
+                        inner_len |= (b & 0x7F) << shift
+                        if not (b & 0x80): break
+                        shift += 7
+                    
+                    if i + inner_len <= n:
+                        # Read Filename
+                        try:
+                            filename_bytes = data[i : i + inner_len]
+                            filename = filename_bytes.decode("utf-8")
                             
-                            if end_fn <= n:
-                                fn_bytes = data[start_fn:end_fn]
-                                filename = fn_bytes.decode('utf-8')
-                                
-                                if "." in filename:
-                                    clean_name = sanitize_filename(filename)
-                                    media_map[key] = clean_name
-                                    
-                                    # Copy logic
-                                    # Try Key
-                                    src_key = key
-                                    if src_key not in existing_files:
-                                        # Try Fallback
-                                        if key in shift_map and shift_map[key] in existing_files:
-                                            src_key = shift_map[key]
-                                        # Try ASCII code? e.g. " -> 34
-                                        elif len(key) == 1 and str(ord(key[0])) in existing_files:
-                                            src_key = str(ord(key[0]))
-                                    
-                                    src = os.path.join(BASE_DIR, src_key)
-                                    dst = os.path.join(IMAGES_DIR, clean_name)
-                                    
-                                    if os.path.exists(src):
-                                        # Decompress/Fix
-                                        is_zstd = False
-                                        try:
-                                            with open(src, "rb") as f_chk:
-                                                if f_chk.read(4) == b'\x28\xb5\x2f\xfd': is_zstd = True
-                                        except: pass
-                                        
-                                        temp_dst = dst + ".tmp"
-                                        if is_zstd:
-                                            try:
-                                                with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
-                                                    zstandard.ZstdDecompressor().copy_stream(f_in, f_out)
-                                            except: shutil.copy2(src, temp_dst)
-                                        else:
-                                            shutil.copy2(src, temp_dst)
-                                        
-                                        # Pillow
-                                        try:
-                                            from PIL import Image
-                                            with Image.open(temp_dst) as img:
-                                                img.load()
-                                                fmt = None
-                                                if clean_name.lower().endswith((".png")): fmt = "PNG"
-                                                elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
-                                                if fmt:
-                                                    if fmt == "JPEG" and img.mode in ("RGBA", "P"): img = img.convert("RGB")
-                                                    img.save(dst, format=fmt)
-                                                else: shutil.move(temp_dst, dst)
-                                                if os.path.exists(temp_dst): os.remove(temp_dst)
-                                        except:
-                                            if os.path.exists(temp_dst): shutil.move(temp_dst, dst)
-                                            
-                                        print(f"Recovered: {clean_name} (from {src_key})")
-                                        found = True
-                    except: pass
-            i += 1
+                            media_map[str(idx)] = sanitize_filename(filename)
+                        except: pass
+                    
+                    idx += 1
+                
+                # Move to next message
+                i = end_pos
+             
+             print(f"Loaded {len(media_map)} media files via Protobuf.")
+
+        # Process the map
+        for key, clean_name in media_map.items():
+            # Copy logic
+            # Try Key
+            src_key = key
+            if src_key not in existing_files:
+                # Try Fallback: mapped keys might differ?
+                # For protobuf list, key is "0", "1", etc. which matches disk files directly.
+                 pass
+            
+            src = os.path.join(BASE_DIR, src_key)
+            dst = os.path.join(IMAGES_DIR, clean_name)
+            
+            if os.path.exists(src):
+                # Decompress/Fix
+                is_zstd = False
+                try:
+                    with open(src, "rb") as f_chk:
+                        if f_chk.read(4) == b'\x28\xb5\x2f\xfd': is_zstd = True
+                except: pass
+                
+                temp_dst = dst + ".tmp"
+                if is_zstd:
+                    try:
+                        with open(src, "rb") as f_in, open(temp_dst, "wb") as f_out:
+                            zstandard.ZstdDecompressor().copy_stream(f_in, f_out)
+                    except: shutil.copy2(src, temp_dst)
+                else:
+                    shutil.copy2(src, temp_dst)
+                
+                # Pillow
+                try:
+                    from PIL import Image
+                    with Image.open(temp_dst) as img:
+                        img.load()
+                        fmt = None
+                        if clean_name.lower().endswith((".png")): fmt = "PNG"
+                        elif clean_name.lower().endswith((".jpg", ".jpeg")): fmt = "JPEG"
+                        if fmt:
+                            if fmt == "JPEG" and img.mode in ("RGBA", "P"): img = img.convert("RGB")
+                            img.save(dst, format=fmt)
+                        else: shutil.move(temp_dst, dst)
+                        if os.path.exists(temp_dst): os.remove(temp_dst)
+                except:
+                    if os.path.exists(temp_dst): shutil.move(temp_dst, dst)
+                    
+                # print(f"Recovered: {clean_name} (from {src_key})")
     except Exception as e:
         print(f"Error extracting media: {e}")
 

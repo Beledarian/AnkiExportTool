@@ -5,7 +5,7 @@ A robust Python tool to extract **Anki decks (.apkg)** into clean **Markdown fil
 ## Features
 
 - 📦 **Deep Extraction**: Handles Anki v2.1+ compressed databases (zstd) and legacy formats.
-- 🖼️ **Robust Image Recovery**: Advanced binary scanning recovers images even from corrupted media maps or filenames with illegal characters (using a smart fallback mapping).
+- 📦 **Deep Media Parsing**: Uses a prioritized parser that supports standard JSON, ZSTD-compressed JSON, and **ZSTD-compressed Protobuf** media maps, ensuring correct image allocation even for complex Anki exports.
 - 📝 **Smart Segmentation**: Splits large decks into manageable Markdown chunks (default: 50 cards per file).
 - 🔗 **Format Conversion**: Automatically converts Anki's `<img src="...">` tags to standard Markdown `![alt](path)` blocks.
 - 🤖 **MCP Server**: Includes a Model Context Protocol (MCP) server integration for use with AI assistants and IDEs.
